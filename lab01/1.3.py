@@ -14,17 +14,18 @@ DECRYPTED_FILE = BASE_DIR / "decrypted.txt"
 REPORT_FILE = BASE_DIR / "analysis_report.txt"
 IC_CHART_FILE = BASE_DIR / "ic_chart.png"
 
-KEY = "ключ"
+KEY = "мехмат"
 MAX_KEY_LENGTH = 20
+TOP_KEY_LENGTHS = 3
 
 STANDARD_FREQ = {
-    "а": 0.083, "б": 0.015, "в": 0.055, "г": 0.013, "ґ": 0.001,
-    "д": 0.031, "е": 0.045, "є": 0.004, "ж": 0.009, "з": 0.016,
-    "и": 0.020, "і": 0.062, "ї": 0.003, "й": 0.010, "к": 0.040,
-    "л": 0.039, "м": 0.030, "н": 0.067, "о": 0.094, "п": 0.028,
-    "р": 0.047, "с": 0.044, "т": 0.059, "у": 0.033, "ф": 0.003,
-    "х": 0.010, "ц": 0.006, "ч": 0.012, "ш": 0.007, "щ": 0.004,
-    "ь": 0.018, "ю": 0.008, "я": 0.021,
+    "а": 0.080120, "б": 0.016710, "в": 0.057412, "г": 0.011997, "ґ": 0.000000,
+    "д": 0.036418, "е": 0.044130, "є": 0.013282, "ж": 0.009854, "з": 0.025278,
+    "и": 0.068552, "і": 0.050985, "ї": 0.001714, "й": 0.013710, "к": 0.032562,
+    "л": 0.033419, "м": 0.024850, "н": 0.070266, "о": 0.089546, "п": 0.030848,
+    "р": 0.040703, "с": 0.044559, "т": 0.064267, "у": 0.034276, "ф": 0.002142,
+    "х": 0.010283, "ц": 0.004713, "ч": 0.016710, "ш": 0.008569, "щ": 0.005998,
+    "ь": 0.020566, "ю": 0.012425, "я": 0.023136,
 }
 
 
@@ -126,16 +127,9 @@ def compute_ic_scores(ciphertext: str, max_key_length: int) -> dict[int, float]:
     return scores
 
 
-def choose_key_length(scores: dict[int, float]) -> int:
-    max_ic = max(scores.values())
-
-    promising_lengths = [
-        key_length
-        for key_length, score in scores.items()
-        if score >= max_ic * 0.95
-    ]
-
-    return min(promising_lengths)
+def choose_top_key_lengths(scores: dict[int, float], top_n: int = 3) -> list[int]:
+    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+    return [key_length for key_length, _ in ranked[:top_n]]
 
 
 def chi_square_stat(text: str, expected_freq: dict[str, float]) -> float:
@@ -216,12 +210,9 @@ def build_report(
     plaintext: str,
     ciphertext: str,
     ic_scores: dict[int, float],
-    chosen_length: int,
-    guessed_key: str,
-    short_key: str,
-    decrypted_text: str,
+    top_lengths: list[int],
+    analysis_results: list[dict],
     reference_source: str,
-    key_scores: list[float],
 ) -> str:
     lines = []
 
@@ -238,26 +229,28 @@ def build_report(
         lines.append(f"{k:2d}: {value:.6f}\n")
 
     lines.append("\n")
-    lines.append(f"Обрана довжина ключа: {chosen_length}\n")
-    lines.append(f"Відновлений ключ: {guessed_key}\n")
-    lines.append(f"Стиснений ключ: {short_key}\n")
-    lines.append("Значення хі-квадрат для літер ключа:\n")
+    lines.append(f"Топ-{len(top_lengths)} довжин ключа: {', '.join(map(str, top_lengths))}\n\n")
 
-    for i, score in enumerate(key_scores, start=1):
-        lines.append(f"позиція {i}: {score:.6f}\n")
+    for i, result in enumerate(analysis_results, start=1):
+        lines.append(f"=== Кандидат {i} ===\n")
+        lines.append(f"Довжина ключа: {result['key_length']}\n")
+        lines.append(f"Відновлений ключ: {result['guessed_key']}\n")
+        lines.append(f"Стиснений ключ: {result['short_key']}\n")
+        lines.append(f"Розшифрування повністю збігається: {result['decrypted_text'] == plaintext}\n")
+        lines.append("Значення хі-квадрат для літер ключа:\n")
 
-    lines.append("\n")
-    lines.append("Порівняння текстів:\n")
-    lines.append(f"Відновлення повністю збігається: {decrypted_text == plaintext}\n\n")
+        for j, score in enumerate(result["key_scores"], start=1):
+            lines.append(f"позиція {j}: {score:.6f}\n")
+
+        lines.append("\n")
+        lines.append("Перші 300 символів розшифрованого тексту:\n")
+        lines.append(result["decrypted_text"][:300] + "\n\n")
 
     lines.append("Перші 300 символів відкритого тексту:\n")
     lines.append(plaintext[:300] + "\n\n")
 
     lines.append("Перші 300 символів криптотексту:\n")
-    lines.append(ciphertext[:300] + "\n\n")
-
-    lines.append("Перші 300 символів розшифрованого тексту:\n")
-    lines.append(decrypted_text[:300] + "\n")
+    lines.append(ciphertext[:300] + "\n")
 
     return "".join(lines)
 
@@ -277,35 +270,53 @@ def main() -> None:
     save_text(CIPHERTEXT_FILE, ciphertext)
 
     ic_scores = compute_ic_scores(ciphertext, MAX_KEY_LENGTH)
-    chosen_length = choose_key_length(ic_scores)
+    top_lengths = choose_top_key_lengths(ic_scores, TOP_KEY_LENGTHS)
 
-    guessed_key, key_scores = guess_key(ciphertext, chosen_length, reference_freq)
-    short_key = compress_repeated_key(guessed_key)
+    analysis_results = []
 
-    decrypted_text = vigenere_decrypt(ciphertext, guessed_key)
-    save_text(DECRYPTED_FILE, decrypted_text)
+    for idx, key_length in enumerate(top_lengths, start=1):
+        guessed_key, key_scores = guess_key(ciphertext, key_length, reference_freq)
+        short_key = compress_repeated_key(guessed_key)
+        decrypted_text = vigenere_decrypt(ciphertext, guessed_key)
+
+        output_file = BASE_DIR / f"decrypted_top_{idx}.txt"
+        save_text(output_file, decrypted_text)
+
+        analysis_results.append({
+            "key_length": key_length,
+            "guessed_key": guessed_key,
+            "short_key": short_key,
+            "key_scores": key_scores,
+            "decrypted_text": decrypted_text,
+            "output_file": output_file,
+        })
 
     report = build_report(
         plaintext=plaintext,
         ciphertext=ciphertext,
         ic_scores=ic_scores,
-        chosen_length=chosen_length,
-        guessed_key=guessed_key,
-        short_key=short_key,
-        decrypted_text=decrypted_text,
+        top_lengths=top_lengths,
+        analysis_results=analysis_results,
         reference_source=reference_source,
-        key_scores=key_scores,
     )
     save_text(REPORT_FILE, report)
 
     print("=== РЕЗУЛЬТАТ ===")
     print(f"Довжина тексту: {len(plaintext)}")
     print(f"Справжній ключ: {normalize_text(KEY)}")
-    print(f"Оцінена довжина ключа: {chosen_length}")
-    print(f"Відновлений ключ: {guessed_key}")
-    print(f"Стиснений ключ: {short_key}")
-    print(f"Розшифрування збігається з оригіналом: {decrypted_text == plaintext}")
+    print(f"Топ-{TOP_KEY_LENGTHS} довжин ключа: {top_lengths}")
     print()
+
+    for i, result in enumerate(analysis_results, start=1):
+        print(f"--- Кандидат {i} ---")
+        print(f"Оцінена довжина ключа: {result['key_length']}")
+        print(f"Відновлений ключ: {result['guessed_key']}")
+        print(f"Стиснений ключ: {result['short_key']}")
+        print(f"Розшифрування збігається з оригіналом: {result['decrypted_text'] == plaintext}")
+        print("Перші 200 символів дешифрування:")
+        print(result["decrypted_text"][:200])
+        print()
+
     print("IC для довжин ключа:")
     for k, value in ic_scores.items():
         print(f"{k:2d}: {value:.6f}")
